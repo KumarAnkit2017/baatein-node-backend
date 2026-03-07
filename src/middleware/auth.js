@@ -1,6 +1,6 @@
 const { StatusCodes } = require('http-status-codes');
 const { verifyToken } = require('../utils/jwt');
-const { pool } = require('../config/db');
+const User = require('../models/User');
 
 const auth = async (req, res, next) => {
   try {
@@ -11,21 +11,17 @@ const auth = async (req, res, next) => {
 
     const token = header.split(' ')[1];
     const decoded = verifyToken(token);
-    const result = await pool.query(
-      'SELECT id, name, email, mobile_number, avatar, bio, is_active FROM users WHERE id = $1 LIMIT 1',
-      [decoded.sub]
-    );
-    const user = result.rows[0];
+    const user = await User.findById(decoded.sub).lean();
 
-    if (!user || !user.is_active) {
+    if (!user || !user.isActive) {
       return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid session' });
     }
 
     req.user = {
-      id: user.id,
+      id: user._id,
       name: user.name,
       email: user.email || '',
-      mobileNumber: user.mobile_number || '',
+      mobileNumber: user.mobileNumber || '',
       avatar: user.avatar,
       bio: user.bio
     };

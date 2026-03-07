@@ -3,10 +3,9 @@ dotenv.config();
 
 module.exports = {
   host: process.env.HOST || '0.0.0.0',
-  port: Number(process.env.PORT || 8000),
+  port: Number(process.env.PORT || 3000),
   nodeEnv: process.env.NODE_ENV || 'development',
-  databaseUrl: process.env.DATABASE_URL || 'postgresql://postgres:postgres@localhost:5432/baatein',
-  databaseSsl: String(process.env.DATABASE_SSL || 'false').toLowerCase() === 'true',
+  mongoUri: process.env.MONGO_URI || 'mongodb://localhost:27017/baatein',
   jwtSecret: process.env.JWT_SECRET || 'unsafe_dev_secret_change_me',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
   clientUrl: process.env.CLIENT_URL || '*',

@@ -1,15 +1,6 @@
 const { verifyToken } = require('../utils/jwt');
-const { pool } = require('../config/db');
-
-const mapMessage = (row) => ({
-  _id: row.id,
-  sender: row.sender_id,
-  recipient: row.recipient_id,
-  group: row.group_id,
-  content: row.content,
-  messageType: row.message_type,
-  createdAt: row.created_at
-});
+const Message = require('../models/Message');
+const Group = require('../models/Group');
 
 const setupSockets = (io) => {
   io.use((socket, next) => {
@@ -28,10 +19,10 @@ const setupSockets = (io) => {
     socket.join(`user:${socket.userId}`);
 
     try {
-      const groupResult = await pool.query('SELECT group_id FROM group_members WHERE user_id = $1', [socket.userId]);
-      groupResult.rows.forEach((g) => socket.join(`group:${g.group_id}`));
+      const groups = await Group.find({ members: socket.userId }, { _id: 1 }).lean();
+      groups.forEach((g) => socket.join(`group:${g._id}`));
     } catch {
-      // no-op: connection stays alive even if group join query fails once
+      // no-op
     }
 
     socket.on('private:message', async (payload) => {
@@ -39,17 +30,16 @@ const setupSockets = (io) => {
         const { recipientId, content, messageType = 'text' } = payload;
         if (!recipientId || !content) return;
 
-        const inserted = await pool.query(
-          `INSERT INTO messages (sender_id, recipient_id, content, message_type)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, sender_id, recipient_id, group_id, content, message_type, created_at`,
-          [socket.userId, recipientId, content, messageType]
-        );
+        const message = await Message.create({
+          sender: socket.userId,
+          recipient: recipientId,
+          content,
+          messageType
+        });
 
-        const message = mapMessage(inserted.rows[0]);
         io.to(`user:${recipientId}`).to(`user:${socket.userId}`).emit('private:message:new', message);
       } catch {
-        // ignore invalid socket payloads/errors
+        // ignore payload errors
       }
     });
 
@@ -66,33 +56,28 @@ const setupSockets = (io) => {
         const { groupId, content, messageType = 'text' } = payload;
         if (!groupId || !content) return;
 
-        const member = await pool.query(
-          'SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1',
-          [groupId, socket.userId]
-        );
-        if (!member.rowCount) return;
+        const group = await Group.findById(groupId).lean();
+        if (!group || !group.members.some((m) => String(m) === String(socket.userId))) return;
 
-        const inserted = await pool.query(
-          `INSERT INTO messages (sender_id, group_id, content, message_type)
-           VALUES ($1, $2, $3, $4)
-           RETURNING id, sender_id, recipient_id, group_id, content, message_type, created_at`,
-          [socket.userId, groupId, content, messageType]
-        );
+        const message = await Message.create({
+          sender: socket.userId,
+          group: groupId,
+          content,
+          messageType
+        });
 
-        io.to(`group:${groupId}`).emit('group:message:new', mapMessage(inserted.rows[0]));
+        io.to(`group:${groupId}`).emit('group:message:new', message);
       } catch {
-        // ignore invalid socket payloads/errors
+        // ignore payload errors
       }
     });
 
     socket.on('group:activity', async ({ groupId, activity = 'typing' }) => {
       if (!groupId) return;
       try {
-        const member = await pool.query(
-          'SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 LIMIT 1',
-          [groupId, socket.userId]
-        );
-        if (!member.rowCount) return;
+        const group = await Group.findById(groupId).lean();
+        if (!group || !group.members.some((m) => String(m) === String(socket.userId))) return;
+
         socket.to(`group:${groupId}`).emit('group:activity', {
           fromUserId: socket.userId,
           groupId,

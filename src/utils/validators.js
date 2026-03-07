@@ -1,6 +1,6 @@
 const Joi = require('joi');
 
-const idSchema = Joi.string().guid({ version: ['uuidv4', 'uuidv5'] });
+const idSchema = Joi.string().hex().length(24);
 const phoneSchema = Joi.string().pattern(/^\+?[1-9]\d{9,14}$/);
 
 const registerSchema = Joi.object({

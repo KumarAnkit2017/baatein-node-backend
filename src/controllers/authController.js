@@ -1,21 +1,22 @@
 const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { StatusCodes } = require('http-status-codes');
-const { pool } = require('../config/db');
+const User = require('../models/User');
+const OtpCode = require('../models/OtpCode');
 const { signToken } = require('../utils/jwt');
 const { otpTtlSeconds, otpDebug } = require('../config/env');
 
 const normalizePhone = (phone) => String(phone || '').replace(/\s+/g, '');
 
 const toAuthPayload = (user) => {
-  const token = signToken({ sub: user.id, email: user.email || '', mobileNumber: user.mobile_number || '' });
+  const token = signToken({ sub: String(user._id), email: user.email || '', mobileNumber: user.mobileNumber || '' });
   return {
     token,
     user: {
-      id: user.id,
+      id: user._id,
       name: user.name,
       email: user.email || '',
-      mobileNumber: user.mobile_number || '',
+      mobileNumber: user.mobileNumber || '',
       avatar: user.avatar,
       bio: user.bio
     }
@@ -25,46 +26,34 @@ const toAuthPayload = (user) => {
 const register = async (req, res) => {
   const { name, email, password, mobileNumber } = req.body;
 
-  const existingEmail = await pool.query('SELECT id FROM users WHERE email = $1 LIMIT 1', [email]);
-  if (existingEmail.rowCount) {
+  const existingEmail = await User.findOne({ email }).lean();
+  if (existingEmail) {
     return res.status(StatusCodes.CONFLICT).json({ message: 'Email already in use' });
   }
 
   const phone = mobileNumber ? normalizePhone(mobileNumber) : null;
   if (phone) {
-    const existingPhone = await pool.query('SELECT id FROM users WHERE mobile_number = $1 LIMIT 1', [phone]);
-    if (existingPhone.rowCount) {
+    const existingPhone = await User.findOne({ mobileNumber: phone }).lean();
+    if (existingPhone) {
       return res.status(StatusCodes.CONFLICT).json({ message: 'Mobile number already in use' });
     }
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
-  const inserted = await pool.query(
-    `INSERT INTO users (name, email, mobile_number, password_hash)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, name, email, mobile_number, avatar, bio`,
-    [name, email, phone, passwordHash]
-  );
+  const user = await User.create({ name, email, mobileNumber: phone, passwordHash });
 
-  return res.status(StatusCodes.CREATED).json(toAuthPayload(inserted.rows[0]));
+  return res.status(StatusCodes.CREATED).json(toAuthPayload(user));
 };
 
 const login = async (req, res) => {
   const { email, password } = req.body;
-  const result = await pool.query(
-    `SELECT id, name, email, mobile_number, avatar, bio, password_hash
-     FROM users
-     WHERE email = $1 AND is_active = true
-     LIMIT 1`,
-    [email]
-  );
+  const user = await User.findOne({ email, isActive: true }).select('+passwordHash');
 
-  const user = result.rows[0];
   if (!user) {
     return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid credentials' });
   }
 
-  const ok = await bcrypt.compare(password, user.password_hash);
+  const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) {
     return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid credentials' });
   }
@@ -77,12 +66,18 @@ const requestOtp = async (req, res) => {
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const otpHash = await bcrypt.hash(otp, 10);
 
-  await pool.query('DELETE FROM otp_codes WHERE mobile_number = $1 OR expires_at < now()', [mobileNumber]);
-  await pool.query(
-    `INSERT INTO otp_codes (mobile_number, otp_hash, expires_at)
-     VALUES ($1, $2, now() + ($3 || ' seconds')::interval)`,
-    [mobileNumber, otpHash, otpTtlSeconds]
-  );
+  await OtpCode.deleteMany({
+    $or: [
+      { mobileNumber },
+      { expiresAt: { $lt: new Date() } }
+    ]
+  });
+
+  await OtpCode.create({
+    mobileNumber,
+    otpHash,
+    expiresAt: new Date(Date.now() + otpTtlSeconds * 1000)
+  });
 
   const payload = {
     message: 'OTP sent successfully',
@@ -102,51 +97,37 @@ const verifyOtp = async (req, res) => {
   const { otp } = req.body;
   const providedName = (req.body.name || '').trim();
 
-  const otpResult = await pool.query(
-    `SELECT id, otp_hash, attempts, expires_at
-     FROM otp_codes
-     WHERE mobile_number = $1
-     ORDER BY created_at DESC
-     LIMIT 1`,
-    [mobileNumber]
-  );
-
-  const record = otpResult.rows[0];
-  if (!record || new Date(record.expires_at).getTime() < Date.now()) {
+  const record = await OtpCode.findOne({ mobileNumber }).sort({ createdAt: -1 });
+  if (!record || record.expiresAt.getTime() < Date.now()) {
     return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'OTP expired or not found' });
   }
 
-  const isValidOtp = await bcrypt.compare(otp, record.otp_hash);
+  const isValidOtp = await bcrypt.compare(otp, record.otpHash);
   if (!isValidOtp) {
-    await pool.query('UPDATE otp_codes SET attempts = attempts + 1 WHERE id = $1', [record.id]);
+    record.attempts += 1;
+    await record.save();
     return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid OTP' });
   }
 
-  await pool.query('DELETE FROM otp_codes WHERE mobile_number = $1', [mobileNumber]);
+  await OtpCode.deleteMany({ mobileNumber });
 
-  let userResult = await pool.query(
-    `SELECT id, name, email, mobile_number, avatar, bio
-     FROM users
-     WHERE mobile_number = $1 AND is_active = true
-     LIMIT 1`,
-    [mobileNumber]
-  );
+  let user = await User.findOne({ mobileNumber, isActive: true });
 
-  if (!userResult.rowCount) {
+  if (!user) {
     const safeDigits = mobileNumber.replace(/\D/g, '');
     const name = providedName || `User ${safeDigits.slice(-4) || 'New'}`;
     const pseudoEmail = `mobile_${safeDigits || crypto.randomUUID()}@baatein.local`;
     const passwordHash = await bcrypt.hash(crypto.randomUUID(), 10);
 
-    userResult = await pool.query(
-      `INSERT INTO users (name, email, mobile_number, password_hash)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, name, email, mobile_number, avatar, bio`,
-      [name, pseudoEmail, mobileNumber, passwordHash]
-    );
+    user = await User.create({
+      name,
+      email: pseudoEmail,
+      mobileNumber,
+      passwordHash
+    });
   }
 
-  return res.status(StatusCodes.OK).json(toAuthPayload(userResult.rows[0]));
+  return res.status(StatusCodes.OK).json(toAuthPayload(user));
 };
 
 module.exports = { register, login, requestOtp, verifyOtp };
