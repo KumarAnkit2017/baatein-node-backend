@@ -26,21 +26,48 @@ const toAuthPayload = (user) => {
 const register = async (req, res) => {
   const { name, email, password, mobileNumber } = req.body;
 
-  const existingEmail = await User.findOne({ email }).lean();
-  if (existingEmail) {
-    return res.status(StatusCodes.CONFLICT).json({ message: 'Email already in use' });
+  // Require at least one login method
+  if (!email && !mobileNumber) {
+    return res.status(400).json({
+      message: "Email or mobile number is required"
+    });
   }
 
-  const phone = mobileNumber ? normalizePhone(mobileNumber) : null;
-  if (phone) {
+  // Check email
+  if (email) {
+    const existingEmail = await User.findOne({ email }).lean();
+    if (existingEmail) {
+      return res.status(StatusCodes.CONFLICT).json({
+        message: "Email already in use"
+      });
+    }
+  }
+
+  // Normalize phone
+  let phone;
+  if (mobileNumber) {
+    phone = normalizePhone(mobileNumber);
+
     const existingPhone = await User.findOne({ mobileNumber: phone }).lean();
     if (existingPhone) {
-      return res.status(StatusCodes.CONFLICT).json({ message: 'Mobile number already in use' });
+      return res.status(StatusCodes.CONFLICT).json({
+        message: "Mobile number already in use"
+      });
     }
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
-  const user = await User.create({ name, email, mobileNumber: phone, passwordHash });
+
+  // Build user object dynamically (IMPORTANT)
+  const userData = {
+    name,
+    passwordHash
+  };
+
+  if (email) userData.email = email;
+  if (phone) userData.mobileNumber = phone;
+
+  const user = await User.create(userData);
 
   return res.status(StatusCodes.CREATED).json(toAuthPayload(user));
 };
