@@ -49,6 +49,11 @@ const groupMessageSchema = Joi.object({
   messageType: Joi.string().valid('text', 'image', 'file').default('text')
 });
 
+const addGroupMembersSchema = Joi.object({
+  groupId: idSchema.required(),
+  memberIds: Joi.array().items(idSchema).min(1).required()
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
@@ -57,5 +62,6 @@ module.exports = {
   profileSchema,
   privateMessageSchema,
   createGroupSchema,
-  groupMessageSchema
+  groupMessageSchema,
+  addGroupMembersSchema
 };

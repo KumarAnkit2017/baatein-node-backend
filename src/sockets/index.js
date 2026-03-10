@@ -2,6 +2,14 @@ const { verifyToken } = require('../utils/jwt');
 const Message = require('../models/Message');
 const Group = require('../models/Group');
 
+const emitToGroupMembers = (io, group, eventName, payload, excludeUserId = null) => {
+  if (!group?.members?.length) return;
+  group.members.forEach((memberId) => {
+    if (excludeUserId && String(memberId) === String(excludeUserId)) return;
+    io.to(`user:${memberId}`).emit(eventName, payload);
+  });
+};
+
 const setupSockets = (io) => {
   io.use((socket, next) => {
     try {
@@ -66,6 +74,7 @@ const setupSockets = (io) => {
           messageType
         });
 
+        emitToGroupMembers(io, group, 'group:message:new', message);
         io.to(`group:${groupId}`).emit('group:message:new', message);
       } catch {
         // ignore payload errors
@@ -78,6 +87,17 @@ const setupSockets = (io) => {
         const group = await Group.findById(groupId).lean();
         if (!group || !group.members.some((m) => String(m) === String(socket.userId))) return;
 
+        emitToGroupMembers(
+          io,
+          group,
+          'group:activity',
+          {
+            fromUserId: socket.userId,
+            groupId,
+            activity
+          },
+          socket.userId
+        );
         socket.to(`group:${groupId}`).emit('group:activity', {
           fromUserId: socket.userId,
           groupId,

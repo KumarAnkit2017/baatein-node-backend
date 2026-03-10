@@ -16,6 +16,7 @@ const start = async () => {
     }
   });
 
+  app.set('io', io);
   setupSockets(io);
 
   server.listen(env.port, env.host, () => {

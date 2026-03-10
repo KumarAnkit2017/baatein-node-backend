@@ -2,6 +2,18 @@ const { StatusCodes } = require('http-status-codes');
 const Message = require('../models/Message');
 const Group = require('../models/Group');
 
+const toGroupResponse = (groupDoc) => ({
+  _id: groupDoc._id,
+  name: groupDoc.name,
+  description: groupDoc.description,
+  admin: groupDoc.admin,
+  members: groupDoc.members,
+  createdAt: groupDoc.createdAt,
+  updatedAt: groupDoc.updatedAt
+});
+
+const toUniqueStrings = (values = []) => [...new Set((values || []).map((v) => String(v)))];
+
 const sendPrivateMessage = async (req, res) => {
   const { recipientId, content, messageType } = req.body;
   const message = await Message.create({
@@ -32,7 +44,7 @@ const getPrivateMessages = async (req, res) => {
 
 const createGroup = async (req, res) => {
   const { name, description, memberIds } = req.body;
-  const uniqueMembers = [...new Set([String(req.user.id), ...((memberIds || []).map(String))])];
+  const uniqueMembers = toUniqueStrings([req.user.id, ...(memberIds || [])]);
 
   const group = await Group.create({
     name,
@@ -41,14 +53,79 @@ const createGroup = async (req, res) => {
     members: uniqueMembers
   });
 
-  return res.status(StatusCodes.CREATED).json({
-    _id: group._id,
-    name: group.name,
-    description: group.description,
-    admin: group.admin,
-    members: group.members,
-    createdAt: group.createdAt,
-    updatedAt: group.updatedAt
+  const groupData = toGroupResponse(group);
+  const io = req.app.get('io');
+  const adminId = String(req.user.id);
+  const invitedMemberIds = uniqueMembers.filter((id) => id !== adminId);
+
+  if (io) {
+    uniqueMembers.forEach((memberId) => {
+      io.in(`user:${memberId}`).socketsJoin(`group:${group._id}`);
+    });
+
+    invitedMemberIds.forEach((memberId) => {
+      io.to(`user:${memberId}`).emit('group:added', {
+        group: groupData,
+        addedBy: adminId
+      });
+    });
+  }
+
+  return res.status(StatusCodes.CREATED).json(groupData);
+};
+
+const addGroupMembers = async (req, res) => {
+  const { groupId, memberIds } = req.body;
+  const uniqueRequestedMembers = toUniqueStrings(memberIds);
+
+  const group = await Group.findById(groupId);
+  if (!group) {
+    return res.status(StatusCodes.NOT_FOUND).json({ message: 'Group not found' });
+  }
+
+  if (String(group.admin) !== String(req.user.id)) {
+    return res.status(StatusCodes.FORBIDDEN).json({ message: 'Only group admin can add members' });
+  }
+
+  const existingMemberSet = new Set(group.members.map((m) => String(m)));
+  const newMembers = uniqueRequestedMembers.filter((id) => !existingMemberSet.has(String(id)));
+
+  if (newMembers.length === 0) {
+    return res.status(StatusCodes.OK).json({
+      group: toGroupResponse(group),
+      addedMemberIds: []
+    });
+  }
+
+  group.members = toUniqueStrings([...group.members.map(String), ...newMembers]);
+  await group.save();
+
+  const io = req.app.get('io');
+  const groupData = toGroupResponse(group);
+  if (io) {
+    group.members.forEach((memberId) => {
+      io.in(`user:${memberId}`).socketsJoin(`group:${group._id}`);
+    });
+
+    newMembers.forEach((memberId) => {
+      io.to(`user:${memberId}`).emit('group:added', {
+        group: groupData,
+        addedBy: String(req.user.id)
+      });
+    });
+
+    group.members.forEach((memberId) => {
+      io.to(`user:${memberId}`).emit('group:members:added', {
+        groupId: String(group._id),
+        addedBy: String(req.user.id),
+        addedMemberIds: newMembers
+      });
+    });
+  }
+
+  return res.status(StatusCodes.OK).json({
+    group: groupData,
+    addedMemberIds: newMembers
   });
 };
 
@@ -101,6 +178,7 @@ module.exports = {
   sendPrivateMessage,
   getPrivateMessages,
   createGroup,
+  addGroupMembers,
   sendGroupMessage,
   getGroupMessages,
   listMyGroups
