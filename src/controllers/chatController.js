@@ -26,6 +26,38 @@ const sendPrivateMessage = async (req, res) => {
   return res.status(StatusCodes.CREATED).json(message);
 };
 
+const updatePrivateMessage = async (req, res) => {
+  const { messageId } = req.params;
+  const { content } = req.body;
+  const message = await Message.findById(messageId);
+  if (!message || message.group) {
+    return res.status(StatusCodes.NOT_FOUND).json({ message: 'Message not found' });
+  }
+  if (String(message.sender) !== String(req.user.id)) {
+    return res.status(StatusCodes.FORBIDDEN).json({ message: 'You can edit only your own messages' });
+  }
+
+  message.content = content;
+  message.editedAt = new Date();
+  await message.save();
+
+  const io = req.app.get('io');
+  if (io) {
+    io.to(`user:${String(message.sender)}`)
+      .to(`user:${String(message.recipient)}`)
+      .emit('private:message:updated', {
+        _id: message._id,
+        sender: message.sender,
+        recipient: message.recipient,
+        content: message.content,
+        messageType: message.messageType,
+        editedAt: message.editedAt
+      });
+  }
+
+  return res.status(StatusCodes.OK).json(message);
+};
+
 const getPrivateMessages = async (req, res) => {
   const { userId } = req.params;
   const me = String(req.user.id);
@@ -176,6 +208,7 @@ const listMyGroups = async (req, res) => {
 
 module.exports = {
   sendPrivateMessage,
+  updatePrivateMessage,
   getPrivateMessages,
   createGroup,
   addGroupMembers,

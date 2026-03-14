@@ -25,6 +25,15 @@ const verifyOtpSchema = Joi.object({
   name: Joi.string().min(2).max(80).optional()
 });
 
+const requestEmailVerificationSchema = Joi.object({
+  email: Joi.string().email().required()
+});
+
+const verifyEmailSchema = Joi.object({
+  email: Joi.string().email().required(),
+  otp: Joi.string().pattern(/^\d{6}$/).required()
+});
+
 const profileSchema = Joi.object({
   name: Joi.string().min(2).max(80),
   bio: Joi.string().max(250),
@@ -34,7 +43,7 @@ const profileSchema = Joi.object({
 const privateMessageSchema = Joi.object({
   recipientId: idSchema.required(),
   content: Joi.string().min(1).max(4000).required(),
-  messageType: Joi.string().valid('text', 'image', 'file').default('text')
+  messageType: Joi.string().valid('text', 'image', 'file', 'location').default('text')
 });
 
 const createGroupSchema = Joi.object({
@@ -46,7 +55,7 @@ const createGroupSchema = Joi.object({
 const groupMessageSchema = Joi.object({
   groupId: idSchema.required(),
   content: Joi.string().min(1).max(4000).required(),
-  messageType: Joi.string().valid('text', 'image', 'file').default('text')
+  messageType: Joi.string().valid('text', 'image', 'file', 'location').default('text')
 });
 
 const addGroupMembersSchema = Joi.object({
@@ -54,13 +63,20 @@ const addGroupMembersSchema = Joi.object({
   memberIds: Joi.array().items(idSchema).min(1).required()
 });
 
+const updatePrivateMessageSchema = Joi.object({
+  content: Joi.string().min(1).max(4000).required()
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
   requestOtpSchema,
   verifyOtpSchema,
+  requestEmailVerificationSchema,
+  verifyEmailSchema,
   profileSchema,
   privateMessageSchema,
+  updatePrivateMessageSchema,
   createGroupSchema,
   groupMessageSchema,
   addGroupMembersSchema

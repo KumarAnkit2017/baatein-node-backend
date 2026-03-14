@@ -2,78 +2,105 @@ const bcrypt = require('bcryptjs');
 const crypto = require('crypto');
 const { StatusCodes } = require('http-status-codes');
 const User = require('../models/User');
-const OtpCode = require('../models/OtpCode');
+const { otpDebug, otpTtlSeconds } = require('../config/env');
+const { sendEmailOtp } = require('../services/emailService');
+const { sendSmsOtp } = require('../services/smsService');
+const { issueOtp, verifyOtpCode } = require('../services/verificationService');
 const { signToken } = require('../utils/jwt');
-const { otpTtlSeconds, otpDebug } = require('../config/env');
 
 const normalizePhone = (phone) => String(phone || '').replace(/\s+/g, '');
+const normalizeEmail = (email) => String(email || '').trim().toLowerCase();
+const maskEmail = (email) => {
+  const [local, domain] = normalizeEmail(email).split('@');
+  if (!local || !domain) return '';
+  const safeLocal = local.length <= 2 ? `${local[0] || ''}*` : `${local.slice(0, 2)}${'*'.repeat(Math.max(1, local.length - 2))}`;
+  return `${safeLocal}@${domain}`;
+};
+
+const toUserPayload = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email || '',
+  mobileNumber: user.mobileNumber || '',
+  avatar: user.avatar,
+  bio: user.bio,
+  emailVerified: Boolean(user.emailVerifiedAt),
+  mobileVerified: Boolean(user.mobileVerifiedAt)
+});
 
 const toAuthPayload = (user) => {
   const token = signToken({ sub: String(user._id), email: user.email || '', mobileNumber: user.mobileNumber || '' });
   return {
     token,
-    user: {
-      id: user._id,
-      name: user.name,
-      email: user.email || '',
-      mobileNumber: user.mobileNumber || '',
-      avatar: user.avatar,
-      bio: user.bio
-    }
+    user: toUserPayload(user)
   };
+};
+
+const sendEmailVerificationCode = async (user) => {
+  const { otp } = await issueOtp({
+    target: normalizeEmail(user.email),
+    channel: 'email',
+    purpose: 'verify-email',
+    userId: user._id,
+    ttlSeconds: otpTtlSeconds
+  });
+
+  const delivery = await sendEmailOtp({
+    to: user.email,
+    name: user.name,
+    otp,
+    ttlSeconds: otpTtlSeconds,
+    purpose: 'verify-email'
+  });
+
+  return { otp, delivery };
 };
 
 const register = async (req, res) => {
   const { name, email, password, mobileNumber } = req.body;
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedPhone = mobileNumber ? normalizePhone(mobileNumber) : '';
 
-  // Require at least one login method
-  if (!email && !mobileNumber) {
-    return res.status(400).json({
-      message: "Email or mobile number is required"
-    });
+  const existingEmail = await User.findOne({ email: normalizedEmail }).lean();
+  if (existingEmail) {
+    return res.status(StatusCodes.CONFLICT).json({ message: 'Email already in use' });
   }
 
-  // Check email
-  if (email) {
-    const existingEmail = await User.findOne({ email }).lean();
-    if (existingEmail) {
-      return res.status(StatusCodes.CONFLICT).json({
-        message: "Email already in use"
-      });
-    }
-  }
-
-  // Normalize phone
-  let phone;
-  if (mobileNumber) {
-    phone = normalizePhone(mobileNumber);
-
-    const existingPhone = await User.findOne({ mobileNumber: phone }).lean();
+  if (normalizedPhone) {
+    const existingPhone = await User.findOne({ mobileNumber: normalizedPhone }).lean();
     if (existingPhone) {
-      return res.status(StatusCodes.CONFLICT).json({
-        message: "Mobile number already in use"
-      });
+      return res.status(StatusCodes.CONFLICT).json({ message: 'Mobile number already in use' });
     }
   }
 
   const passwordHash = await bcrypt.hash(password, 12);
-
-  // Build user object dynamically (IMPORTANT)
-  const userData = {
-    name,
+  const user = await User.create({
+    name: String(name || '').trim(),
+    email: normalizedEmail,
+    mobileNumber: normalizedPhone || undefined,
     passwordHash
+  });
+
+  const { otp, delivery } = await sendEmailVerificationCode(user);
+  const payload = {
+    message: 'Account created. Verify your email to continue.',
+    requiresEmailVerification: true,
+    email: user.email,
+    maskedEmail: maskEmail(user.email),
+    expiresInSeconds: otpTtlSeconds,
+    delivery: delivery.delivered ? 'sent' : delivery.debugOnly ? 'debug' : 'pending_configuration'
   };
 
-  if (email) userData.email = email;
-  if (phone) userData.mobileNumber = phone;
+  if (otpDebug) {
+    payload.otp = otp;
+  }
 
-  const user = await User.create(userData);
-
-  return res.status(StatusCodes.CREATED).json(toAuthPayload(user));
+  return res.status(StatusCodes.CREATED).json(payload);
 };
 
 const login = async (req, res) => {
-  const { email, password } = req.body;
+  const email = normalizeEmail(req.body.email);
+  const { password } = req.body;
   const user = await User.findOne({ email, isActive: true }).select('+passwordHash');
 
   if (!user) {
@@ -85,31 +112,46 @@ const login = async (req, res) => {
     return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid credentials' });
   }
 
+  if (user.email && !user.emailVerifiedAt) {
+    const { otp, delivery } = await sendEmailVerificationCode(user);
+    const payload = {
+      message: 'Email verification required before login.',
+      requiresEmailVerification: true,
+      email: user.email,
+      maskedEmail: maskEmail(user.email),
+      expiresInSeconds: otpTtlSeconds,
+      delivery: delivery.delivered ? 'sent' : delivery.debugOnly ? 'debug' : 'pending_configuration'
+    };
+    if (otpDebug) {
+      payload.otp = otp;
+    }
+    return res.status(StatusCodes.FORBIDDEN).json(payload);
+  }
+
   return res.status(StatusCodes.OK).json(toAuthPayload(user));
 };
 
 const requestOtp = async (req, res) => {
   const mobileNumber = normalizePhone(req.body.mobileNumber);
-  const otp = String(Math.floor(100000 + Math.random() * 900000));
-  const otpHash = await bcrypt.hash(otp, 10);
-
-  await OtpCode.deleteMany({
-    $or: [
-      { mobileNumber },
-      { expiresAt: { $lt: new Date() } }
-    ]
+  const { otp } = await issueOtp({
+    target: mobileNumber,
+    channel: 'sms',
+    purpose: 'login-mobile',
+    ttlSeconds: otpTtlSeconds
   });
 
-  await OtpCode.create({
-    mobileNumber,
-    otpHash,
-    expiresAt: new Date(Date.now() + otpTtlSeconds * 1000)
-  });
+  const delivery = await sendSmsOtp({ mobileNumber, otp, ttlSeconds: otpTtlSeconds });
+  if (!delivery.delivered && !delivery.debugOnly) {
+    return res.status(StatusCodes.SERVICE_UNAVAILABLE).json({
+      message: 'SMS provider is not configured correctly. Add SMS_API_URL and provider payload settings in backend .env.'
+    });
+  }
 
   const payload = {
     message: 'OTP sent successfully',
     mobileNumber,
-    expiresInSeconds: otpTtlSeconds
+    expiresInSeconds: otpTtlSeconds,
+    delivery: delivery.delivered ? 'sent' : 'debug'
   };
 
   if (otpDebug) {
@@ -122,21 +164,25 @@ const requestOtp = async (req, res) => {
 const verifyOtp = async (req, res) => {
   const mobileNumber = normalizePhone(req.body.mobileNumber);
   const { otp } = req.body;
-  const providedName = (req.body.name || '').trim();
+  const providedName = String(req.body.name || '').trim();
 
-  const record = await OtpCode.findOne({ mobileNumber }).sort({ createdAt: -1 });
-  if (!record || record.expiresAt.getTime() < Date.now()) {
-    return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'OTP expired or not found' });
+  const result = await verifyOtpCode({
+    target: mobileNumber,
+    channel: 'sms',
+    purpose: 'login-mobile',
+    otp
+  });
+
+  if (!result.ok) {
+    const map = {
+      not_found: 'OTP expired or not found',
+      expired: 'OTP expired or not found',
+      invalid: 'Invalid OTP',
+      too_many_attempts: 'Too many invalid attempts. Request a new OTP.'
+    };
+    const status = result.reason === 'too_many_attempts' ? StatusCodes.TOO_MANY_REQUESTS : StatusCodes.UNAUTHORIZED;
+    return res.status(status).json({ message: map[result.reason] || 'OTP verification failed' });
   }
-
-  const isValidOtp = await bcrypt.compare(otp, record.otpHash);
-  if (!isValidOtp) {
-    record.attempts += 1;
-    await record.save();
-    return res.status(StatusCodes.UNAUTHORIZED).json({ message: 'Invalid OTP' });
-  }
-
-  await OtpCode.deleteMany({ mobileNumber });
 
   let user = await User.findOne({ mobileNumber, isActive: true });
 
@@ -150,11 +196,89 @@ const verifyOtp = async (req, res) => {
       name,
       email: pseudoEmail,
       mobileNumber,
-      passwordHash
+      passwordHash,
+      mobileVerifiedAt: new Date()
     });
+  } else if (!user.mobileVerifiedAt) {
+    user.mobileVerifiedAt = new Date();
+    await user.save();
   }
 
   return res.status(StatusCodes.OK).json(toAuthPayload(user));
 };
 
-module.exports = { register, login, requestOtp, verifyOtp };
+const requestEmailVerification = async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const user = await User.findOne({ email, isActive: true });
+
+  if (!user) {
+    return res.status(StatusCodes.NOT_FOUND).json({ message: 'Account not found for that email' });
+  }
+
+  if (user.emailVerifiedAt) {
+    return res.status(StatusCodes.OK).json({
+      message: 'Email is already verified',
+      email: user.email,
+      maskedEmail: maskEmail(user.email)
+    });
+  }
+
+  const { otp, delivery } = await sendEmailVerificationCode(user);
+  const payload = {
+    message: 'Verification code sent to email',
+    email: user.email,
+    maskedEmail: maskEmail(user.email),
+    expiresInSeconds: otpTtlSeconds,
+    delivery: delivery.delivered ? 'sent' : delivery.debugOnly ? 'debug' : 'pending_configuration'
+  };
+
+  if (otpDebug) {
+    payload.otp = otp;
+  }
+
+  return res.status(StatusCodes.OK).json(payload);
+};
+
+const verifyEmail = async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const { otp } = req.body;
+
+  const user = await User.findOne({ email, isActive: true }).select('+passwordHash');
+  if (!user) {
+    return res.status(StatusCodes.NOT_FOUND).json({ message: 'Account not found for that email' });
+  }
+
+  const result = await verifyOtpCode({
+    target: email,
+    channel: 'email',
+    purpose: 'verify-email',
+    otp
+  });
+
+  if (!result.ok) {
+    const map = {
+      not_found: 'Verification code expired or not found',
+      expired: 'Verification code expired or not found',
+      invalid: 'Invalid verification code',
+      too_many_attempts: 'Too many invalid attempts. Request a new code.'
+    };
+    const status = result.reason === 'too_many_attempts' ? StatusCodes.TOO_MANY_REQUESTS : StatusCodes.UNAUTHORIZED;
+    return res.status(status).json({ message: map[result.reason] || 'Email verification failed' });
+  }
+
+  if (!user.emailVerifiedAt) {
+    user.emailVerifiedAt = new Date();
+    await user.save();
+  }
+
+  return res.status(StatusCodes.OK).json(toAuthPayload(user));
+};
+
+module.exports = {
+  register,
+  login,
+  requestOtp,
+  verifyOtp,
+  requestEmailVerification,
+  verifyEmail
+};

@@ -6,7 +6,8 @@ const messageSchema = new mongoose.Schema(
     recipient: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     group: { type: mongoose.Schema.Types.ObjectId, ref: 'Group', default: null },
     content: { type: String, required: true, trim: true, maxlength: 4000 },
-    messageType: { type: String, enum: ['text', 'image', 'file'], default: 'text' }
+    messageType: { type: String, enum: ['text', 'image', 'file', 'location'], default: 'text' },
+    editedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );

@@ -3,6 +3,7 @@ const auth = require('../middleware/auth');
 const validate = require('../middleware/validate');
 const {
   sendPrivateMessage,
+  updatePrivateMessage,
   getPrivateMessages,
   createGroup,
   addGroupMembers,
@@ -10,12 +11,13 @@ const {
   getGroupMessages,
   listMyGroups
 } = require('../controllers/chatController');
-const { privateMessageSchema, createGroupSchema, groupMessageSchema, addGroupMembersSchema } = require('../utils/validators');
+const { privateMessageSchema, updatePrivateMessageSchema, createGroupSchema, groupMessageSchema, addGroupMembersSchema } = require('../utils/validators');
 
 const router = express.Router();
 router.use(auth);
 
 router.post('/private', validate(privateMessageSchema), sendPrivateMessage);
+router.patch('/private/message/:messageId', validate(updatePrivateMessageSchema), updatePrivateMessage);
 router.get('/private/:userId', getPrivateMessages);
 
 router.post('/groups', validate(createGroupSchema), createGroup);

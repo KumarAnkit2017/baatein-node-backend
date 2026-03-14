@@ -115,6 +115,14 @@ const setupSockets = (io) => {
         callType
       });
     });
+
+    socket.on('call:end', ({ toUserId, reason = 'ended' }) => {
+      if (!toUserId) return;
+      io.to(`user:${toUserId}`).emit('call:end', {
+        fromUserId: socket.userId,
+        reason
+      });
+    });
   });
 };
 

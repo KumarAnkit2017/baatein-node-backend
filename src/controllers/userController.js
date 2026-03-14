@@ -1,28 +1,25 @@
 const { StatusCodes } = require('http-status-codes');
 const User = require('../models/User');
 
+const toUserPayload = (user) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email || '',
+  mobileNumber: user.mobileNumber || '',
+  avatar: user.avatar,
+  bio: user.bio,
+  emailVerified: Boolean(user.emailVerifiedAt),
+  mobileVerified: Boolean(user.mobileVerifiedAt)
+});
+
 const getMe = async (req, res) => {
   const user = await User.findById(req.user.id).lean();
-  return res.status(StatusCodes.OK).json({
-    id: user._id,
-    name: user.name,
-    email: user.email || '',
-    mobileNumber: user.mobileNumber || '',
-    avatar: user.avatar,
-    bio: user.bio
-  });
+  return res.status(StatusCodes.OK).json(toUserPayload(user));
 };
 
 const updateMe = async (req, res) => {
   const user = await User.findByIdAndUpdate(req.user.id, { $set: req.body }, { new: true }).lean();
-  return res.status(StatusCodes.OK).json({
-    id: user._id,
-    name: user.name,
-    email: user.email || '',
-    mobileNumber: user.mobileNumber || '',
-    avatar: user.avatar,
-    bio: user.bio
-  });
+  return res.status(StatusCodes.OK).json(toUserPayload(user));
 };
 
 const listUsers = async (req, res) => {
