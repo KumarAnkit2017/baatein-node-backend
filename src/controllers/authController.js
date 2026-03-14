@@ -143,7 +143,7 @@ const requestOtp = async (req, res) => {
   const delivery = await sendSmsOtp({ mobileNumber, otp, ttlSeconds: otpTtlSeconds });
   if (!delivery.delivered && !delivery.debugOnly) {
     return res.status(StatusCodes.SERVICE_UNAVAILABLE).json({
-      message: 'SMS provider is not configured correctly. Add SMS_API_URL and provider payload settings in backend .env.'
+      message: 'Twilio is not configured correctly. Add TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_PHONE_NUMBER in backend .env.'
     });
   }
 
@@ -282,3 +282,4 @@ module.exports = {
   requestEmailVerification,
   verifyEmail
 };
+

@@ -18,11 +18,7 @@ module.exports = {
   mailUser: process.env.MAIL_USER || '',
   mailPass: process.env.MAIL_PASS || '',
   mailFrom: process.env.MAIL_FROM || '',
-  smsApiUrl: process.env.SMS_API_URL || '',
-  smsApiKey: process.env.SMS_API_KEY || '',
-  smsApiMethod: process.env.SMS_API_METHOD || 'POST',
-  smsApiAuthHeader: process.env.SMS_API_AUTH_HEADER || 'x-api-key',
-  smsSenderId: process.env.SMS_SENDER_ID || 'BAATEIN',
-  smsTemplateId: process.env.SMS_TEMPLATE_ID || '',
-  smsMessageTemplate: process.env.SMS_MESSAGE_TEMPLATE || 'Your Baatein verification code is {{otp}}. It expires in {{ttlMinutes}} minute(s).'
+  twilioAccountSid: process.env.TWILIO_ACCOUNT_SID || '',
+  twilioAuthToken: process.env.TWILIO_AUTH_TOKEN || '',
+  twilioPhoneNumber: process.env.TWILIO_PHONE_NUMBER || ''
 };
